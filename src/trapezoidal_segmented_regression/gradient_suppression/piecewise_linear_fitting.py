@@ -23,11 +23,16 @@ def GetElbowIndices(signal, num_elbows):
 def GetConstantIntervals(signal, const_value=None):
    intervals = []
    last_val = signal[0]
-   interval_start_idx = -1
+   interval_start_idx = 0 if last_val == const_value else -1
    for idx in range(1, len(signal)):
-      if signal[idx] == last_val and (const_value is None or signal[idx] == const_value):
+      if const_value is None and signal[idx] == last_val:
          if interval_start_idx < 0:
             interval_start_idx = idx-1
+         else:
+            pass # Keep searching along this interval...
+      elif const_value is not None and signal[idx] == const_value:
+         if interval_start_idx < 0:
+            interval_start_idx = idx
          else:
             pass # Keep searching along this interval...
       else:
@@ -160,6 +165,28 @@ def ComputeIntervalActionsMSE(signal, intervals, original_signal):
 
    return interval_actions_mse
 
+def FitConstantIntervalGreedyFourier(signal, interval):
+   interval_length = interval[1] - interval[0] + 1
+   if interval_length <= 3:
+      return None
+
+   # Use FFT to compute a target constant interval length
+   amp_spec = np.abs(np.fft.fft(signal[interval[0]:interval[1]+1]))
+   max_amp_idx = np.argmax(amp_spec[1:interval_length/2])
+   best_freq = np.fft.fftfreq(interval_length)[max_amp_idx+1]
+   target_const_interval_length = int(round(1.0/best_freq)/4)
+
+   # Find the best fit location for the new constant interval
+   min_variance = np.inf
+   best_interval = None
+   for i in range(interval[0],interval[1]-target_const_interval_length):
+      variance = np.var(signal[i:i+target_const_interval_length])
+      if variance < min_variance:
+         min_variance = variance
+         best_interval = [i, i+target_const_interval_length]
+
+   return best_interval
+
 
 def ComputeIntraIntervalMSE(signal, intervals, original_signal):
    intra_intervals = GetIntraIntervals(signal, intervals)
@@ -210,8 +237,12 @@ def DoPiecewiseLinearFitting(signal_csv_path, out_pickle_file):
    iteration = 0
    is_finished = False
    while not is_finished:
-      strategy = 'worst_intra_interval'
+      strategy = 'greedy_fourier'
+      #strategy = 'worst_intra_interval'
+      #strategy = 'min_gradient'
+      #strategy = 'gradient_threshold'
       if strategy == 'min_gradient':
+         do_compute_mse = False
          if total_interval_length_per_iter and total_interval_length_per_iter[-1] == len(signal):
             do_compute_mse = True
          delta[delta == 0] = np.nan
@@ -258,10 +289,30 @@ def DoPiecewiseLinearFitting(signal_csv_path, out_pickle_file):
          delta = np.diff(signal)
          is_finished = np.sum(delta) == 0
          get_intervals_const = None
-      elif strategy == 'min_area': # TODO
+      elif strategy == 'greedy_fourier':
+         get_intervals_const = CONST_VAL
          do_compute_mse = True
-         min_idx = np.nanargmin(np.abs(delta))
-         get_intervals_const = None
+         if iteration == 0:
+            threshold_indices = [signal.index[0], signal.index[-1]]
+            do_compute_mse = True
+         else:
+            intra_interval_mse = ComputeIntraIntervalMSE(opt_signal, intervals, original_signal)
+            max_idx = np.argmax(zip(*intra_interval_mse)[1])
+            intra_interval = intra_interval_mse[max_idx][0]
+            new_interval = FitConstantIntervalGreedyFourier(original_signal, intra_interval)
+            if new_interval is None:
+               is_finished = True
+               # TODO - Phase 2: Decrease the constnat intervals by removing them and replacing with lines
+               # I may have coded this up already, look at other methods
+            else:
+               threshold_indices.extend(range(new_interval[0], new_interval[1]+1))
+
+         if 'constant_indices' not in locals():
+            constant_indices = np.zeros_like(original_signal).astype(bool)
+         constant_indices[threshold_indices] = True
+         signal = original_signal.copy()
+         signal[constant_indices] = CONST_VAL
+
       elif strategy == 'gradient_threshold' or strategy == 'worst_intra_interval':
          do_compute_mse = True #iteration > 300
 
@@ -270,7 +321,7 @@ def DoPiecewiseLinearFitting(signal_csv_path, out_pickle_file):
                sorted_abs_delta = np.unique(np.sort(np.abs(delta)))
             threshold_indices = np.where(np.abs(delta) <= sorted_abs_delta[iteration])[0].tolist()
             threshold_indices.extend(np.array(threshold_indices)+1)
-            threshold_indicies = np.unique(threshold_indices)
+            threshold_indices = np.unique(threshold_indices)
             do_threshold_add_interval = True
             get_intervals_const = None
 
