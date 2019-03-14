@@ -34,6 +34,7 @@ def ComputeOptimalFit(input_csv_path, num_segments):
       B = np.nan*np.zeros((n,n))
       X = np.nan*np.zeros((n, num_segments))
       for j in range(1,n+1):
+         print("Computing optimal sub-segmentation for points up to index %d of %d"%(j, n))
          for t in range(j,num_segments+1):
             F[j-1,t-1] = np.inf
             I[j-1,t-1] = 0
