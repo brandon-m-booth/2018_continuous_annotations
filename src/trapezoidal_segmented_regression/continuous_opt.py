@@ -16,6 +16,7 @@ import util
 
 # For debugging
 show_debug_plots = False
+can_parallelize = False # TODO - Parallelism runs much slower. Investigate and fix me!
 
 def FitNextSegment(signal, n, i, j, t, A, B):
    """
@@ -81,7 +82,10 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
                   last_knots.append(i)
 
             next_segment_args = [(signal, n, i, j, t, A, B) for i in last_knots]
-            results = pool.map(FitNextSegmentStar, next_segment_args)
+            if can_parallelize:
+               results = pool.map(FitNextSegmentStar, next_segment_args)
+            else:
+               results = [FitNextSegmentStar(params) for params in next_segment_args]
 
             if show_debug_plots:
                for (a,b,x,cost) in results:
