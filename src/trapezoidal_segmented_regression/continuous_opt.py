@@ -9,12 +9,14 @@ import statprof
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib2tikz
 from multiprocessing import Pool
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, 'util')))
 import util
 
 # For debugging
+show_final_plot = False
 show_debug_plots = False
 can_parallelize = False # TODO - Parallelism runs much slower. Investigate and fix me!
 
@@ -24,16 +26,17 @@ def FitNextSegment(signal, n, i, j, t, A, B):
    """
    previous_segment_slope = A[i-1,t-2]
    if previous_segment_slope == 0.0:
-      (a, b, x, cost) = util.FitLineSegmentWithIntersection(signal, i, j-1, A[i-1,t-2], B[i-1,t-2], max(0,signal.index[i-1]), min(signal.index[n-1],signal.index[i]))
+      (a, b, x, cost) = util.FitLineSegmentWithIntersection(signal, i, j-1, A[i-1,t-2], B[i-1,t-2], max(signal.index[0],signal.index[i-1]), min(signal.index[n-1],signal.index[i]))
    else:
       a = 0
-      (b, x, cost) = util.FitConstantSegmentWithIntersection(signal, i, j-1, A[i-1,t-2], B[i-1,t-2], max(0,signal.index[i-1]), min(signal.index[n-1],signal.index[i]))
+      (b, x, cost) = util.FitConstantSegmentWithIntersection(signal, i, j-1, A[i-1,t-2], B[i-1,t-2], max(signal.index[0],signal.index[i-1]), min(signal.index[n-1],signal.index[i]))
    return a, b, x, cost
 
 def FitNextSegmentStar(args):
    return FitNextSegment(*args)
 
-def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
+# Dynamic program to find the optimal trapezoidal segmented regression
+def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path, tikz_file=None):
    # Get the signal data
    signal_df = pd.read_csv(input_csv_path)
    time = signal_df.iloc[:,0]
@@ -47,19 +50,24 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
    best_y = None
    best_cost = np.inf
    for start_with_constant_segment in [True, False]:
-      # Dynamic program to find the optimal trapezoidal segmented regression
+
       n = len(time)
       F = np.nan*np.zeros((n, num_segments))
       I = np.zeros((n, num_segments)).astype(int)
       A = np.nan*np.zeros((n,n))
       B = np.nan*np.zeros((n,n))
       X = np.nan*np.zeros((n, num_segments))
+      # Iterate over all sorted points in order
       for j in range(1,n+1):
          print("Computing optimal sub-segmentation for points up to index %d of %d"%(j, n))
+
+         # Initialize costs and set knot indices to an invalid index
          for t in range(j,num_segments+1):
             F[j-1,t-1] = np.inf
             I[j-1,t-1] = 0
             X[j-1,t-1] = 0
+
+         # Fit a single line segment to all points up to the current one
          if start_with_constant_segment:
             a = 0.0
             (b, cost) = util.FitConstantSegment(signal.iloc[0:j])
@@ -70,11 +78,15 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
          X[j-1,0] = signal.index[0]
          F[j-1,0] = cost
          I[j-1,0] = 1
+
+         # Consider using all possible number of segments between the first point and the current
          for t in range(2,min(j,num_segments+1)):
             F[j-1,t-1] = np.inf
             I[j-1,t-1] = 0
             X[j-1,0] = 0
 
+            # For the target number of t segments, find the best break point reusing the optimum
+            # fit for t-1 segments over all points up to some point before the current
             last_knots = []
             for i in range(t,j):
                k = I[i-1,t-2]
@@ -101,6 +113,7 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
                      plt.title("T=%d, i=%d, j=%d, Cost of new line: %f"%(t, i, j, cost))
                      plt.show()
 
+            # Update the cost, linear coefficients, and break points
             avals, bvals, xvals, costs = zip(*results)
             last_knots = np.array(last_knots)
             prev_sum_costs = F[last_knots-1,t-2]
@@ -112,7 +125,7 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
                I[j-1,t-1] = last_knots[min_idx]
                X[j-1,t-1] = xvals[min_idx]
 
-      # Recover optimal approximation
+      # Recover optimum TSR
       knots = [n]
       x = [signal.index[n-1]]
       i = n
@@ -146,7 +159,11 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path):
    plt.plot(time, signal, 'bo')
    plt.plot(best_x, best_y, 'r-')
    plt.title("Best fit with MSE cost: %f"%(best_cost))
-   plt.show()
+   if tikz_file is not None:
+      matplotlib2tikz.save(tikz_file)
+   if show_final_plot:
+      plt.show()
+      
 
    return
 
@@ -157,6 +174,7 @@ if __name__ == '__main__':
    parser.add_argument('--segments', dest='num_segments', required=True, help='Number of segments to use in the approximation')
    parser.add_argument('--maxjobs', dest='max_jobs', required=False, help='The maximum number of parallel jobs allowed.  For maximal efficiency, set this value to the number of processing cores available')
    parser.add_argument('--output', dest='output_csv', required=True, help='Output csv path')
+   parser.add_argument('--tikz', dest='tikz', required=False, help='Output path for TikZ PGF plot code') 
    try:
       args = parser.parse_args()
    except:
@@ -165,5 +183,6 @@ if __name__ == '__main__':
    input_csv_path = args.input_csv
    num_segments = int(args.num_segments)
    max_jobs = int(args.max_jobs) if args.max_jobs is not None else 1
+   tikz_file = args.tikz
    output_csv_path = args.output_csv
-   ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path)
+   ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path, tikz_file=tikz_file)
