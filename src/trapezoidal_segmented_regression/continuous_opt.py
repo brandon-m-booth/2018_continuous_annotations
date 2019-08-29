@@ -20,6 +20,28 @@ show_final_plot = False
 show_debug_plots = False
 can_parallelize = False # TODO - Parallelism runs much slower. Investigate and fix me!
 
+# Recovers the optimum TSR of the signal up to index i (1 <= i <= n) for the given number of segments t (1 <= t <= num_segments)
+def RecoverOptimumTSR(i, t, X, I, A, B, signal):
+   # Find the knot x-axis locations and get the indices of the signal points with x values just before each knot
+   knots = [i]
+   x = [signal.index[i-1]]
+   while t > 0:
+      x.append(X[knots[-1]-1,t-1])
+      knots.append(I[knots[-1]-1,t-1])
+      t -= 1
+   knots.reverse()
+   x.reverse()
+
+   # Compute the y-axis value at each knot location
+   y = [A[knots[1]-1,0]*x[0] + B[knots[1]-1,0]]
+   t = 1
+   for i in range(1,len(knots)-1):
+      y.append(A[knots[i]-1,t-1]*x[i] + B[knots[i]-1,t-1])
+      t += 1
+   y.append(A[knots[-1]-1,t-1]*x[-1] + B[knots[-1]-1,t-1])
+
+   return (x,y)
+
 def FitNextSegment(signal, n, i, j, t, A, B):
    """
    Helper function to fit the correct next line segment type for trapezoidal functions
@@ -99,20 +121,6 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path, t
             else:
                results = [FitNextSegmentStar(params) for params in next_segment_args]
 
-            if show_debug_plots:
-               for (a,b,x,cost) in results:
-                  if not np.isinf(cost):
-                     plt.figure()
-                     plt.plot(signal.index[0:j], signal.iloc[0:j], 'bo')
-                     new_line_x = np.array(signal.index[i-1:j])
-                     new_line_y = a*new_line_x + b
-                     plt.plot(new_line_x, new_line_y, 'g--')
-                     right_most_line_x = np.array(signal.index[0:i+1])
-                     right_most_line_y = A[i-1,t-2]*right_most_line_x + B[i-1,t-2]
-                     plt.plot(right_most_line_x, right_most_line_y, 'r-')
-                     plt.title("T=%d, i=%d, j=%d, Cost of new line: %f"%(t, i, j, cost))
-                     plt.show()
-
             # Update the cost, linear coefficients, and break points
             avals, bvals, xvals, costs = zip(*results)
             last_knots = np.array(last_knots)
@@ -125,23 +133,39 @@ def ComputeOptimalFit(input_csv_path, num_segments, max_jobs, output_csv_path, t
                I[j-1,t-1] = last_knots[min_idx]
                X[j-1,t-1] = xvals[min_idx]
 
+            if show_debug_plots:
+               for results_idx in range(len(results)):
+                  a,b,x,cost = results[results_idx]
+                  i = last_knots[results_idx]
+                  if not np.isinf(cost):
+                     # Get best TSR up to signal index i for t-1 segments
+                     best_tsr_so_far_x, best_tsr_so_far_y = RecoverOptimumTSR(i, t-1, X, I, A, B, signal)
+
+                     # Store the best line segment computed this iteration
+                     new_line_x = np.array(signal.index[i-1:j])
+                     new_line_y = a*new_line_x + b
+
+                     # Find the intersection of the new line and the best TSR so far
+                     c = (best_tsr_so_far_y[-2]-b-a*best_tsr_so_far_x[-2])/(a*(best_tsr_so_far_x[-1]-best_tsr_so_far_x[-2])-best_tsr_so_far_y[-1]+best_tsr_so_far_y[-2])
+                     x_int = best_tsr_so_far_x[-2] + c*(best_tsr_so_far_x[-1]-best_tsr_so_far_x[-2])
+                     y_int = best_tsr_so_far_y[-2] + c*(best_tsr_so_far_y[-1]-best_tsr_so_far_y[-2])
+
+                     # Fix up the TSR and new line points so they share the intersection
+                     best_tsr_so_far_x[-1] = x_int
+                     best_tsr_so_far_y[-1] = y_int
+                     new_line_x[0] = x_int
+                     new_line_y[0] = y_int
+
+                     plt.figure()
+                     plt.plot(signal.index[0:i], signal.iloc[0:i], 'mo')
+                     plt.plot(signal.index[i:j], signal.iloc[i:j], 'bo')
+                     plt.plot(new_line_x, new_line_y, 'g--')
+                     plt.plot(best_tsr_so_far_x, best_tsr_so_far_y, 'r-')
+                     plt.title("T=%d, i=%d, j=%d, Cost of new line: %f"%(t, i, j, cost))
+                     plt.show()
+
       # Recover optimum TSR
-      knots = [n]
-      x = [signal.index[n-1]]
-      i = n
-      t = num_segments
-      while t > 0:
-         x.append(X[knots[-1]-1,t-1])
-         knots.append(I[knots[-1]-1,t-1])
-         t -= 1
-      knots.reverse()
-      x.reverse()
-      y = [A[knots[1]-1,0]*x[0] + B[knots[1]-1,0]]
-      t = 1
-      for i in range(1,len(knots)-1):
-         y.append(A[knots[i]-1,t-1]*x[i] + B[knots[i]-1,t-1])
-         t += 1
-      y.append(A[knots[-1]-1,t-1]*x[-1] + B[knots[-1]-1,t-1])
+      x,y = RecoverOptimumTSR(n, num_segments, X, I, A, B, signal)
 
       start_segment_type = "constant-segment-first" if start_with_constant_segment else "linear-segment-first"
       print("Final %s approximation loss value: %f"%(start_segment_type, F[n-1, num_segments-1]))
