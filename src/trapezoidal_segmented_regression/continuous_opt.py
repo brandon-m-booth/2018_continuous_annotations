@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+#Author: Brandon M. Booth
 
 import os
 import sys
